@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # Data Explorer 3
 **Managing all kinds of data in the Visual FoxPro IDE using an extensible tool!** 
 
@@ -17,7 +17,3 @@ Version 3 extends on the functionality provided by the Data Explorer released wi
 * VFPX Repository ([http://vfpxrepository.com](http://vfpxrepository.com))
 
 New file called ChangeLog.TXT included in the project and source with latest changes in each release.
-=======
-# DataExplorer
-VFPX DataExplorer 3 to manage data in the Visual FoxPro IDE with an extensible tool.
->>>>>>> 72be961514fbdf96c9a097c8535d0f51d2bf905c
