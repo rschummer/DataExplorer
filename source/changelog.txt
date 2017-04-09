@@ -1,0 +1,23 @@
+Data Explorer Change Log
+========================
+
+v3.0.3 (9-Sep-2012)
+------
+1) Bug Fix: txtVersion not found when running DX in Task Pane Manager.
+2) Bug Fix: Message displayed when updating features had extraneous line feed, looked funny in Vista and later.
+
+v3.0.2 (27-Aug-2012)
+------
+1) Bug Fix: missing call to instantiate the Import Form 
+
+v3.0.1 (26-Aug-2012)
+------
+1) Export/Import of Data Explorer features to share with others
+2) BROWSE for SQL Server with data update capability
+3) Toggling the Dock State of the Data Explorer form when standalone
+4) New LIST STRU off the shortcut menu
+5) New connection type for Directory shows list of all DBFs in a folder
+6) Corrected bug in Display Show Plan option added to Sedna version of Data Explorer
+7) VFPX Repository (http://vfpxrepository.com)
+
+*: EOF :*
