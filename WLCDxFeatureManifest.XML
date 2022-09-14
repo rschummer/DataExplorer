@@ -1,0 +1,1832 @@
+<?xml version = "1.0" encoding="Windows-1252" standalone="yes"?>
+<VFPData>
+	<curselected>
+		<uniqueid>WLC.CopyToClipboard</uniqueid>
+		<deftype>M</deftype>
+		<conntype/>
+		<connname>Copy Column List to Clipboad (VFP/SQL/ADO)</connname>
+		<conninfo/>
+		<classname/>
+		<classlib/>
+		<dataclass/>
+		<datalib/>
+		<scriptcode>********************************************************************************
+*  SCRIPT: WLC.CopyToClipboard  
+*
+*  AUTHOR: Richard A. Schummer, December 2007
+*
+*  COPYRIGHT © 2008   All Rights Reserved.
+*     Richard A. Schummer
+*     White Light Computing, Inc.
+*     42759 Flis Dr.
+*     Sterling Heights, MI  48314-2850
+*     raschummer@whitelightcomputing.com
+*     rick@rickschummer.com
+*
+*     Shared with the Fox Community via conference sessions at
+*     Southwest Fox (http://swfox.net)
+*     German DevCon (http://devcon.dfpug.de)
+*     No implied warranties for suitablility or usage
+*
+*  SCRIPT DESCRIPTION:
+*     This script copies column names to the clipboard for use in SQL Select, 
+*     or any command with a fields clause. Optionally column names copied with 
+*     structure information for CREATE CURSOR or CREATE TABLE.
+*
+*  CALLING SYNTAX:
+*     Called by the Data Explorer menu script
+*
+*  INPUT PARAMETERS:
+*     toParameter = parameter object passed in by Data Explorer
+*        .CurrentNode - reference to current node
+*        .oDataExplorerEngine - reference to the Data Explorer Engine object
+*      Plus all values from DataExplorer record
+*        .UniqueID, .Template,   .ClassLib,    .ClassName, .ConnInfo
+*        .ConnName, .ConnType,   .CurrentNode, .DataClass, .DataLib
+*        .DefType,  .DisplayOrd, .Inactive,    .Modified,  .OptionData
+*        .Options,  .ScriptCode, .AddInImage,  .User
+*
+*  OUTPUT PARAMETERS:
+*     None
+*
+*  DATABASES ACCESSED:
+*     None
+* 
+*  GLOBAL PROCEDURES REQUIRED:
+*     None
+* 
+*  CODING STANDARDS:
+*     Version 4.0 compliant with no exceptions
+*  
+*  TEST INFORMATION:
+*     None
+*   
+*  SPECIAL REQUIREMENTS/DEVICES:
+*     None
+*
+*  FUTURE ENHANCEMENTS:
+*     Add a form for the developer to select the records for export
+*
+*  LANGUAGE/VERSION:
+*     Visual FoxPro 09.00.0000.xxxx or higher
+* 
+********************************************************************************
+*                             C H A N G E    L O G                              
+*
+*    Date     Developer               Version  Description
+* ----------  ----------------------  -------  ---------------------------------
+* 12/31/2007  Richard A. Schummer     1.0      Created Program
+* ------------------------------------------------------------------------------
+* 09/14/2008  Richard A. Schummer     1.1      Updated standards and m. variables
+* ------------------------------------------------------------------------------
+*
+********************************************************************************
+LPARAMETERS toParameter
+
+*&lt;SET STEP ON 
+
+* Localization
+#DEFINE ccMESSAGEBOXCAPTION      "Data Explorer"
+#DEFINE ccSTRUCTUREINCLUDEDMSG   "Do you want the structure information included in the output?"
+#DEFINE ccCOLUMNSONCLIPBOARDMSG  "Column list is on the clipboard."
+
+* Variable declarations
+LOCAL lcSQL, ;
+      loConnection, ;
+      lnOldSelect, ;
+      lcFieldList, ;
+      lnI, ;
+      lnResult, ;
+      lcTable, ;
+      lcField, ;
+      lnLines, ;
+      lnRow, ;
+      llUseDataTypeInName, ;
+      lcNodeTypeName, ;
+      llStructure, ;
+      llLineUpStructureCode, ;
+      lnUppercasedCharacter, ;
+      lnLengthOfClipMessage, ;
+      loException AS Exception 
+
+LOCAL ARRAY axFields[1]
+LOCAL ARRAY laOptionData[1]
+
+* Initialization
+llUseDataTypeInName   = .T.
+llLineUpStructureCode = .T.
+lnUppercasedCharacter = IIF(m.llUseDataTypeInName, 2, 1)
+
+* Number of seconds Columns on Clipboard message is displayed
+lnLengthOfClipMessage = 2
+
+
+* Ask developer if they want structure information in case they are building
+* code for the CREATE TABLE or CREATE CURSOR commands.
+lnResult = MESSAGEBOX(ccSTRUCTUREINCLUDEDMSG, ;
+                      3 + 32 + 256, ;
+                      ccMESSAGEBOXCAPTION)
+
+DO CASE
+   CASE m.lnResult = 7   &amp;&amp; No (default)
+      llStructure = .F.
+   CASE m.lnResult = 6   &amp;&amp; Yes
+      llStructure = .T.
+   CASE m.lnResult = 2   &amp;&amp; Cancel
+      RETURN
+ENDCASE
+
+lcNodeTypeName = LOWER(toParameter.CurrentNode.Name)
+
+* Build Query using template code
+DO CASE
+   CASE INLIST(m.lcNodeTypeName, "sqltablenode", "adotablenode")
+      lcSQL = STRTRAN(m.toParameter.Template, "#owner#", m.toParameter.CurrentNode.NodeData.Owner)
+      lcSQL = STRTRAN(m.lcSQL, "#name#", m.toParameter.CurrentNode.NodeData.Name)
+
+   CASE INLIST(m.lcNodeTypeName, "vfptableconnectionnode")
+      lnLines = ALINES(laOptionData, m.toParameter.CurrentNode.OptionData)
+      lnRow   = ASCAN(laOptionData, "TableName=")
+
+      IF lnRow &gt; 0
+         lcTable = SUBSTRC(laOptionData[m.lnRow], ATC("=", laOptionData[m.lnRow]) + 1)
+         lcSQL   = STRTRAN(m.toParameter.Template, "#owner#", SPACE(0))
+         lcSQL   = STRTRAN(m.lcSQL, "#name#", ["] + ALLTRIM(m.lcTable) + ["])
+
+         * Get rid of the brackets and period between owner and table name for VFP data
+         lcSQL   = STRTRAN(m.lcSQL, '[',  SPACE(0))
+         lcSQL   = STRTRAN(m.lcSQL, '].', SPACE(0))
+         lcSQL   = STRTRAN(m.lcSQL, ']',  SPACE(0))
+      ELSE
+         * No table name found, bail out.
+         RETURN
+      ENDIF 
+
+   OTHERWISE
+      lcSQL = STRTRAN(m.toParameter.Template, "#owner#", SPACE(0))
+
+      IF ".dbf" $ LOWER(m.toParameter.CurrentNode.NodeText)
+         * VFP table directory based table
+         *&lt; lcDirTableName = JUSTSTEM(m.toParameter.CurrentNode.NodeText)
+         lcSQL = STRTRAN(m.lcSQL, "#name#", m.toParameter.CurrentNode.NodeText)
+      ELSE
+         lcSQL = STRTRAN(m.lcSQL, "#name#", m.toParameter.CurrentNode.NodeData.Name)
+      ENDIF 
+
+      * Get rid of the brackets and period between owner and table name for VFP data
+      lcSQL = STRTRAN(m.lcSQL, '[',  SPACE(0))
+      lcSQL = STRTRAN(m.lcSQL, '].', SPACE(0))
+      lcSQL = STRTRAN(m.lcSQL, ']',  SPACE(0))
+ENDCASE
+
+* Get the connection to the database
+loConnection = m.toParameter.CurrentNode.GetConnection()
+
+IF ISNULL(loConnection)
+   * Nothing to do, no connection
+ELSE
+   loConnection.ExecuteQuery(m.lcSQL, "ResultCursor", SET("Datasession"))
+
+   lnOldSelect = SELECT()
+
+   SELECT ResultCursor
+
+   lcFieldList = SPACE(0)
+   lnFields    = AFIELDS(axFields)
+   lnLength    = 0
+
+   * Determine longest fieldname
+   FOR m.lnI = 1 TO m.lnFields
+      IF LENC(ALLTRIM(axFields[m.lnI, 1])) &gt; m.lnLength
+         lnLength = LENC(ALLTRIM(axFields[m.lnI, 1]))
+      ENDIF
+   ENDFOR 
+
+   * Build the field list
+   FOR m.lnI = 1 TO m.lnFields
+      lcField = LOWER(ALLTRIM(axFields[m.lnI, 1]))
+
+      * Address the casing of the fields
+      IF m.llUseDataTypeInName AND LENC(m.lcField) &gt;= m.lnUppercasedCharacter
+         lcField = STUFFC(m.lcField, m.lnUppercasedCharacter, 1, UPPER(SUBSTRC(m.lcField, m.lnUppercasedCharacter, 1)))
+      ELSE
+         lcField = PROPER(m.lcField)
+      ENDIF
+      
+      * Pad out the length if selecting to include structure 
+      * and have proper setting to pad
+      IF m.llStructure AND m.llLineUpStructureCode 
+         lcField = PADR(m.lcField, m.lnLength, SPACE(1))
+      ENDIF
+      
+      IF m.llStructure
+         lcDataType = axFields[lnI, 2]
+         lcField    = m.lcField + SPACE(1) + m.lcDataType
+         
+         DO CASE
+            CASE INLIST(m.lcDataType, "D", "T", "I", "L", "M", "W", "Y", "G")
+               * Nothing more to do as there is no width to specify
+            CASE INLIST(m.lcDataType, "C", "Q", "V") OR axFields[m.lnI, 4] = 0
+               * Only parenthesis around the width
+               lcField = m.lcField + ;
+                         "(" + ;
+                         TRANSFORM(axFields[m.lnI, 3]) + ;
+                         ")"
+            CASE INLIST(lcDataType, "N", "F", "B")
+               * Width and decimals
+               lcField = m.lcField + ;
+                         "(" + ;
+                         TRANSFORM(axFields[m.lnI, 3]) + ;
+                         "," + ;
+                         TRANSFORM(axFields[m.lnI, 4]) + ;
+                         ")"
+            OTHERWISE
+
+         ENDCASE
+      ENDIF 
+      
+      IF m.lnI # m.lnFields
+         lcField = m.lcField + ", ;"
+      ENDIF 
+      
+      lcFieldList = m.lcFieldList + m.lcField + CHR(13)
+   ENDFOR
+
+   * Close the table or view
+   USE IN (SELECT("ResultCursor"))
+
+   * Drop the list on the clipboard.
+   _cliptext = m.lcFieldList
+
+   MESSAGEBOX(ccCOLUMNSONCLIPBOARDMSG, ;
+              0 + 64, ;
+              ccMESSAGEBOXCAPTION, ;
+              m.lnLengthOfClipMessage * 1000)
+
+   SELECT (m.lnOldSelect)
+ENDIF
+
+RETURN
+
+*: EOS :*</scriptcode>
+		<displayord>34</displayord>
+		<options/>
+		<optiondata/>
+		<whennodes>SQLTableNode, ADOTableNode, VFPTableNode, VFPViewNode, VFPTableConnectionNode</whennodes>
+		<whencode>* &lt;oParameter&gt; = parameter object
+*   .CurrentNode - reference to current node
+*   .oDataExplorerEngine - reference to the Data Explorer Engine object
+*   Plus all values from DataExplorer record
+*     .UniqueID
+*     .Template
+*     .ClassLib
+*     .ClassName
+*     .ConnInfo
+*     .ConnName
+*     .ConnType
+*     .CurrentNode
+*     .DataClass
+*     .DataLib
+*     .DefType
+*     .DisplayOrd
+*     .Inactive
+*     .Modified
+*     .OptionData
+*     .Options
+*     .ScriptCode
+*     .AddInImage
+*     .User
+*
+LPARAMETERS oParameter
+RETURN .T.</whencode>
+		<template>SELECT * FROM [#owner#].[#name#] WHERE 1=0</template>
+		<addinimage/>
+		<inactive>false</inactive>
+		<user/>
+		<modified>2012-08-27T13:31:57</modified>
+	</curselected>
+	<curselected>
+		<uniqueid>WLC.ModifyDatabase</uniqueid>
+		<deftype>M</deftype>
+		<conntype>VFP</conntype>
+		<connname>Modify Database</connname>
+		<conninfo/>
+		<classname/>
+		<classlib/>
+		<dataclass/>
+		<datalib/>
+		<scriptcode>********************************************************************************
+*  SCRIPT: WLC.ModifyDatabase
+*
+*  AUTHOR: Richard A. Schummer, April 2007
+*
+*  COPYRIGHT © 2007-2008   All Rights Reserved.
+*     Richard A. Schummer
+*     White Light Computing, Inc.
+*     42759 Flis Dr.
+*     Sterling Heights, MI  48314-2850
+*     raschummer@whitelightcomputing.com
+*     rick@rickschummer.com
+*
+*     Shared with the Fox Community via conference sessions at
+*     Southwest Fox (http://swfox.net)
+*     German DevCon (http://devcon.dfpug.de)
+*     No implied warranties for suitablility or usage
+*
+*  SCRIPT DESCRIPTION:
+*     This script opens up the selected VFP database in the Database Designer.
+*
+*  CALLING SYNTAX:
+*     Called by the Data Explorer menu script
+*
+*  INPUT PARAMETERS:
+*     toParameter = parameter object passed in by Data Explorer
+*        .CurrentNode - reference to current node
+*        .oDataExplorerEngine - reference to the Data Explorer Engine object
+*      Plus all values from DataExplorer record
+*        .UniqueID, .Template,   .ClassLib,    .ClassName, .ConnInfo
+*        .ConnName, .ConnType,   .CurrentNode, .DataClass, .DataLib
+*        .DefType,  .DisplayOrd, .Inactive,    .Modified,  .OptionData
+*        .Options,  .ScriptCode, .AddInImage,  .User
+*
+*  OUTPUT PARAMETERS:
+*     None
+*
+*  DATABASES ACCESSED:
+*     None
+* 
+*  GLOBAL PROCEDURES REQUIRED:
+*     None
+* 
+*  CODING STANDARDS:
+*     Version 4.0 compliant with no exceptions
+*  
+*  TEST INFORMATION:
+*     None
+*   
+*  SPECIAL REQUIREMENTS/DEVICES:
+*     None
+*
+*  FUTURE ENHANCEMENTS:
+*     Add a form for the developer to select the records for export
+*
+*  LANGUAGE/VERSION:
+*     Visual FoxPro 09.00.0000.xxxx or higher
+* 
+********************************************************************************
+*                             C H A N G E    L O G                              
+*
+*    Date     Developer               Version  Description
+* ----------  ----------------------  -------  ---------------------------------
+* 04/16/2007  Richard A. Schummer     1.0      Created Program
+* ------------------------------------------------------------------------------
+* 09/13/2008  Richard A. Schummer     1.1      Updated standards, m. variables
+*                                              and localizations.
+* ------------------------------------------------------------------------------
+*
+********************************************************************************
+LPARAMETERS toParameter
+
+#DEFINE ccMSGBOXCAPTION  "Data Explorer - Modify Database"
+
+LOCAL lnLines, ;
+      lnRow, ;
+      lcDBC, ;
+      llErrorOpeningDatabase, ;
+      loException AS Exception, ;
+      lnDatabases, ;
+      lnI, ;
+      llDBCOpen
+
+llErrorOpeningDatabase = .F.
+
+DIMENSION laOptionData[1]
+DIMENSION laDatabase[1,2]
+
+*&lt; SET STEP ON
+
+WAIT WINDOW "Opening database " + ;
+            toParameter.CurrentNode.NodeText + ;
+            "..." ;
+     NOWAIT
+
+lnLines = ALINES(laOptionData, ; 
+                 toParameter.CurrentNode.OptionData)
+lnRow   = ASCAN(laOptionData, "DatabaseName=")
+
+IF m.lnRow &gt; 0
+   lcDBC        = SUBSTRC(laOptionData[m.lnRow], ATC("=", laOptionData[m.lnRow]) + 1)
+   lcScriptFile = FORCEEXT(m.lcDBC, "prg")
+   lnDatabases  = ADATABASES(laDatabase)
+   llDBCOpen    = .F.
+
+   FOR m.lnI = 1 TO m.lnDatabases
+      IF LOWER(m.lcDBC) == LOWER(laDatabase[m.lnI])
+         llDBCOpen = .T.
+      ENDIF
+   ENDFOR
+
+   IF NOT m.llDBCOpen
+      TRY 
+         OPEN DATABASE (m.lcDBC) EXCLUSIVE
+      
+      CATCH TO m.loException
+         llErrorOpeningDatabase = .T.
+         
+         MESSAGEBOX("Could not open database container: " + m.loException.Message + ".", ;
+                    0+48, ccMSGBOXCAPTION)
+      ENDTRY
+   ENDIF
+
+   IF m.llErrorOpeningDatabase
+      * Message already handled
+   ELSE
+      lcOldDBC = SET("Database")
+      SET DATABASE TO (JUSTSTEM(m.lcDBC))
+      MODIFY DATABASE 
+      
+      IF NOT EMPTY(lcOldDBC)
+         SET DATABASE TO (lcOldDBC)
+      ENDIF
+   ENDIF
+ELSE
+   * Little problem, could not find database
+   MESSAGEBOX("Database specified was not found.", ;
+              0+48, ;
+              ccMSGBOXCAPTION)
+ENDIF
+
+RETURN
+
+*: EOS :*</scriptcode>
+		<displayord>43</displayord>
+		<options/>
+		<optiondata/>
+		<whennodes>VFPDatabaseNode</whennodes>
+		<whencode>* &lt;oParameter&gt; = parameter object
+*   .CurrentNode - reference to current node
+*   .oDataExplorerEngine - reference to the Data Explorer Engine object
+*   Plus all values from DataExplorer record
+*     .UniqueID
+*     .Template
+*     .ClassLib
+*     .ClassName
+*     .ConnInfo
+*     .ConnName
+*     .ConnType
+*     .CurrentNode
+*     .DataClass
+*     .DataLib
+*     .DefType
+*     .DisplayOrd
+*     .Inactive
+*     .Modified
+*     .OptionData
+*     .Options
+*     .ScriptCode
+*     .AddInImage
+*     .User
+*
+LPARAMETERS oParameter
+RETURN .T.</whencode>
+		<template/>
+		<addinimage/>
+		<inactive>false</inactive>
+		<user/>
+		<modified>2012-08-27T13:31:57</modified>
+	</curselected>
+	<curselected>
+		<uniqueid>WLC.ShowplanDBC</uniqueid>
+		<deftype>M</deftype>
+		<conntype>VFP</conntype>
+		<connname>Display ShowPlan (DBC)</connname>
+		<conninfo/>
+		<classname/>
+		<classlib/>
+		<dataclass/>
+		<datalib/>
+		<scriptcode>********************************************************************************
+*  SCRIPT: WLC.ShowplanDBC 
+*
+*  AUTHOR: Richard A. Schummer, March 2008
+*
+*  COPYRIGHT © 2008   All Rights Reserved.
+*     Richard A. Schummer
+*     White Light Computing, Inc.
+*     42759 Flis Dr.
+*     Sterling Heights, MI  48314-2850
+*     raschummer@whitelightcomputing.com
+*     rick@rickschummer.com
+*
+*     Shared with the Fox Community via conference sessions at
+*     Southwest Fox (http://swfox.net)
+*     German DevCon (http://devcon.dfpug.de)
+*     No implied warranties for suitablility or usage
+*
+*  SCRIPT DESCRIPTION:
+*     This script displays the showplan statistics for each view in the database
+*     container. All view parameters predefined and assigned data types will be 
+*     prefilled before the query. Developer can customize performance thresholds
+*     so slow queries can be searched in result text.
+*
+*  CALLING SYNTAX:
+*     Called by the Data Explorer menu script
+*
+*  INPUT PARAMETERS:
+*     toParameter = parameter object passed in by Data Explorer
+*        .CurrentNode - reference to current node
+*        .oDataExplorerEngine - reference to the Data Explorer Engine object
+*      Plus all values from DataExplorer record
+*        .UniqueID, .Template,   .ClassLib,    .ClassName, .ConnInfo
+*        .ConnName, .ConnType,   .CurrentNode, .DataClass, .DataLib
+*        .DefType,  .DisplayOrd, .Inactive,    .Modified,  .OptionData
+*        .Options,  .ScriptCode, .AddInImage,  .User
+*
+*  OUTPUT PARAMETERS:
+*     None
+*
+*  DATABASES ACCESSED:
+*     None
+* 
+*  GLOBAL PROCEDURES REQUIRED:
+*     None
+* 
+*  CODING STANDARDS:
+*     Version 4.0 compliant with no exceptions
+*  
+*  TEST INFORMATION:
+*     None
+*   
+*  SPECIAL REQUIREMENTS/DEVICES:
+*     None
+*
+*  FUTURE ENHANCEMENTS:
+*     Add a form for the developer to select the records for export
+*
+*  LANGUAGE/VERSION:
+*     Visual FoxPro 09.00.0000.xxxx or higher
+* 
+********************************************************************************
+*                             C H A N G E    L O G                              
+*
+*    Date     Developer               Version  Description
+* ----------  ----------------------  -------  ---------------------------------
+* 05/31/2008  Richard A. Schummer     1.0      Created Program
+* ------------------------------------------------------------------------------
+* 09/05/2008  Richard A. Schummer     1.1      Updated m. variables
+* ------------------------------------------------------------------------------
+*
+********************************************************************************
+LPARAMETERS toParameter
+
+* Customization
+#DEFINE ccMESSAGE_CAPTION       "Data Explorer - Display ShowPlan"
+#DEFINE ccVersion               "v2.0"
+#DEFINE cnCRITICALSLOW          60.0
+#DEFINE cnSUPERSLOW             20.0
+#DEFINE cnSLOW                  10.0
+#DEFINE cnMODERATESLOW           4.0
+#DEFINE ccCRITICALCAPTION       "Critical Slow"
+#DEFINE ccSUPERSLOWCAPTION      "Super Slow"
+#DEFINE ccSLOWCAPTION           "Slow"
+#DEFINE ccMODERATESLOWCAPTION   "Moderate Slow"
+
+* Localization
+#DEFINE ccBORDERCHAR                "*"
+#DEFINE ccRUSHMORELEVEL_LITERAL     "Rushmore Query Optimization Level: "
+#DEFINE ccPROBLEMOPENINGDBC_LITERAL "Problem opening database: "
+#DEFINE ccDBCNOTFOUND_LITERAL       "Database specified was not found."
+#DEFINE ccSECONDS_LITERAL           "Seconds"
+#DEFINE ccRECORDS_LITERAL           "Records"
+#DEFINE ccCOMPLETEDAT_LITERAL       "Completed at"
+#DEFINE ccREMOTEVIEW_LITERAL        "Remote view"
+#DEFINE ccLOCALVIEWS_LITERAL        "Local Views"
+#DEFINE ccREMOTEVIEWS_LITERAL       "Remote Views"
+#DEFINE ccEND_LITERAL               "** End of Analysis **"
+#DEFINE ccCRLF                      CHR(13) + CHR(10)
+
+* Declares
+LOCAL lnLines, ;
+      lnRow, ;
+      llDBCOpen, ;
+      lcDBC, ;
+      lnDatabases, ;
+      lcOutputFile, ;
+      lnI, ;
+      loException AS Exception, ;
+      lcShowPlanText, ;
+      loParameter, ;
+      lcSingleView
+
+DIMENSION laOptionData[1]
+DIMENSION laDatabase[1,2]
+DIMENSION laViews[1]
+
+*&lt; SET STEP ON 
+
+loParameter = toParameter
+
+* Just in case the developer is running the original version of Data Explorer
+TRY 
+   lnLevel = m.loParameter.oDataExplorerEngine.ShowPlanParameter
+CATCH 
+   lnLevel = 11
+ENDTRY
+
+lnLines     = ALINES(laOptionData, m.loParameter.CurrentNode.OptionData)
+lnRow       = ASCAN(laOptionData, "DatabaseName=")
+llDBCOpen   = .F.
+lcOldDBC    = SET("Database")
+
+IF lnRow &gt; 0
+   lcDBC        = SUBSTRC(laOptionData[lnRow], ATC("=", laOptionData[lnRow]) + 1)
+   lnDatabases  = ADATABASES(laDatabase)
+   llDBCOpen    = .F.
+   lcOutputFile = ADDBS(SYS(2023)) + FORCEEXT(JUSTSTEM(m.lcDBC)+"_ShowPlan", "txt")
+
+   FOR m.lnI = 1 TO m.lnDatabases
+      IF LOWER(m.lcDBC) == LOWER(m.laDatabase[lnI])
+         m.llDBCOpen = .T.
+      ENDIF
+   ENDFOR
+
+   IF NOT m.llDBCOpen
+      TRY 
+         OPEN DATABASE (m.lcDBC) EXCLUSIVE
+         llDBCOpen = .T.
+
+      CATCH TO loException
+         MESSAGEBOX(ccPROBLEMOPENINGDBC_LITERAL + m.loException.Message, ;
+                    0+48, ;
+                    ccMSGBOXCAPTION)
+         
+         llDBCOpen = .F.
+      ENDTRY 
+   ENDIF
+
+   IF llDBCOpen
+      * List of view in array
+      SET DATABASE TO (JUSTSTEM(lcDBC))
+      lnViews = ADBOBJECTS(laViews, "VIEW")
+      
+      * Create a parameter object for the call to DetailViewShowPlan()
+      loDetailParameter = CREATEOBJECT("empty")
+      ADDPROPERTY(loDetailParameter, "cViewName", SPACE(0))
+      ADDPROPERTY(loDetailParameter, "nLevel", lnLevel)
+      ADDPROPERTY(loDetailParameter, "nLocalViewCount", 0)
+      ADDPROPERTY(loDetailParameter, "nRemoteViewCount", 0)
+
+      * Collect the information for the views 
+      lcShowPlanText = ccMESSAGE_CAPTION + ccCRLF + ;
+                       ccRUSHMORELEVEL_LITERAL + ; 
+                       TRANSFORM(m.lnLevel) + REPLICATE(ccCRLF, 2)
+
+      FOR lnI = 1 TO lnViews
+         loDetailParameter.cViewName = laViews[m.lnI]
+         lcSingleView                = DetailViewShowPlan(m.loDetailParameter)
+         
+         IF EMPTY(m.lcSingleView)
+            * Nothing reported, no need to add to analysis
+         ELSE
+            lcShowPlanText = m.lcShowPlanText + ;
+                             m.lcSingleView + ;
+                             ccCRLF
+         ENDIF
+      ENDFOR
+
+      * Final view counts
+      IF m.loDetailParameter.nLocalViewCount &gt; 0
+         lcShowPlanText = m.lcShowPlanText + ;
+                          ccCRLF + ;
+                          TRANSFORM(loDetailParameter.nLocalViewCount) + ;
+                          SPACE(1) + ;
+                          ccLOCALVIEWS_LITERAL
+      ENDIF
+      
+      IF m.loDetailParameter.nRemoteViewCount &gt; 0
+         lcShowPlanText = m.lcShowPlanText + ;
+                          ccCRLF + ;
+                          TRANSFORM(loDetailParameter.nRemoteViewCount) + ;
+                          SPACE(1) + ;
+                          ccREMOTEVIEWS_LITERAL
+      ENDIF
+      
+      lcShowPlanText = m.lcShowPlanText + ;
+                       ccCRLF + ccCRLF + ;
+                       ccEND_LITERAL
+      
+      * Output the information to file and display
+      STRTOFILE(m.lcShowPlanText, m.lcOutputFile, 0)
+      MODIFY FILE (m.lcOutputFile) NOWAIT
+   ENDIF
+ELSE
+   * Little Problem, could not find database
+   MESSAGEBOX(ccDBCNOTFOUND_LITERAL, 0+48, ccMSGBOXCAPTION)
+ENDIF
+
+IF llDBCOpen
+   CLOSE DATABASES 
+ENDIF
+
+IF NOT EMPTY(m.lcOldDBC)
+   SET DATABASE TO (m.lcOldDBC)
+ENDIF
+
+RETURN
+
+
+****************************************************************************
+*  PROCEDURE NAME: DetailViewShowPlan
+*
+*  PROCEDURE DESCRIPTION:
+*     This procedure collects the showplan details about a single view
+*
+*  INPUT PARAMETERS (All Required):
+*     toParameter = Object parameter, required, holds rest of parameters
+*
+*  OUTPUT PARAMETERS:
+*     lcSQL     = Returned character string with formatted SQL.
+****************************************************************************
+PROCEDURE DetailViewShowPlan(toParameter)
+
+LOCAL lcView, ;
+      lnLevel, ;
+      lcShowPlanAll, ;
+      lcShowPlanSingleView, ;
+      lcViewParametersOutput, ;
+      lcViewParameters, ;
+      lcSQL, ;
+      lnViewParametersInSQL, ;
+      lnViewParametersInList, ;
+      lcType, ;
+      lcVPVariable, ;
+      lnStart, ;
+      lnRecords, ;
+      lnEnd, ;
+      lnTime, ;
+      lcEndTime, ;
+      loException AS Exception , ;
+      lnPartsOfParameterList
+
+* Default showplan setting in case developer forgets to pass in
+IF VARTYPE(m.toParameter.nLevel) # "N"
+   toParameter.nLevel = 11
+ENDIF
+
+lcView        = m.toParameter.cViewName
+lcShowPlanAll = SPACE(0)
+
+IF DBGETPROP(m.lcView,"VIEW","SOURCETYPE") = 1  &amp;&amp; Local View
+   toParameter.nLocalViewCount = m.toParameter.nLocalViewCount + 1 
+
+   DIMENSION laParameters[1]
+
+   TRY
+      SYS(3054, INT(m.toParameter.nLevel), "lcShowPlanSingleView")
+
+      lcViewParametersOutput = SPACE(0)
+      lcViewParameters       = DBGETPROP(m.lcView, "VIEW", "PARAMETERLIST")
+      lcSQL                  = DBGETPROP(m.lcView, "VIEW", "SQL")
+      lnViewParametersInSQL  = OCCURS("?", m.lcSQL)
+
+
+      IF EMPTY(lcViewParameters)    
+         * Nothing to do for the parameters since there is nothing declared.
+      ELSE 
+         lnViewParametersInList = ALINES(laParameters, m.lcViewParameters, 1+2, ";")
+
+         FOR lnI = 1 TO m.lnViewParametersInList
+            lnPartsOfParameterList = ALINES(laThisParameter, laParameters[lnI], 1+2, ",")
+            lcVPVariable = ALLTRIM(laThisParameter[1,1])
+            PRIVATE &amp;lcVPVariable
+            
+            * Remove the single quotes out of parameter list data type column
+            lcType = STRTRAN(laThisParameter[1, 2], ['], SPACE(0))
+
+            * Initialize the declared variable (defaults to PRIVATE)
+            DO CASE
+               CASE UPPER(m.lcType) = "C"
+                  &amp;lcVPVariable = SPACE(0)
+               CASE INLIST(UPPER(m.lcType), "N", "I", "F", "B")
+                  &amp;lcVPVariable = 0
+               CASE UPPER(m.lcType) = "L"
+                  &amp;lcVPVariable = .F.
+               CASE UPPER(m.lcType) = "D"
+                  &amp;lcVPVariable = {}
+               CASE UPPER(m.lcType) = "T"
+                  &amp;lcVPVariable = {/:}
+               CASE UPPER(m.lcType) = "Y"
+                  &amp;lcVPVariable = NTOM(0.00)
+               OTHERWISE
+                  * Covered through VFP9 SP2
+            ENDCASE
+
+            lcViewParametersOutput = m.lcViewParametersOutput + ;
+                                     IIF(EMPTY(m.lcViewParametersOutput), SPACE(0), ", ") + ;
+                                     m.lcVPVariable + " (" + m.lcType + ")"
+         ENDFOR
+      ENDIF
+
+      lcShowPlanSingleView = SPACE(0)  &amp;&amp; Need to clear showplan var each time
+      lcShowPlanAll        = m.lcShowPlanAll + ; 
+                             REPLICATE(ccBORDERCHAR, LENC(m.lcView) + 4) + ccCRLF + ;
+                             ccBORDERCHAR + SPACE(1) + LOWER(m.lcView) + SPACE(1) + ccBORDERCHAR + ccCRLF + ;
+                             REPLICATE(ccBORDERCHAR, LENC(m.lcView) + 4)
+
+      lnStart = SECONDS()
+
+      SET TALK ON
+      SET TALK WINDOW
+
+      USE (lcView) IN 0 AGAIN SHARED ALIAS curShowPlanTest
+
+      SET TALK NOWINDOW
+      SET TALK OFF
+
+      lnRecords = _TALLY
+      lnEnd     = SECONDS()
+      lnTime    = m.lnEnd - m.lnStart
+
+      DO CASE
+         CASE m.lnTime &gt;= cnCRITICALSLOW
+            lcShowPlanAll = m.lcShowPlanAll + ccCRLF + "(" + ccCRITICALCAPTION + ")"
+         CASE lnTime &gt;= cnSUPERSLOW
+            lcShowPlanAll = m.lcShowPlanAll + ccCRLF + "(" + ccSUPERSLOWCAPTION + ")"
+         CASE lnTime &gt;= cnSLOW
+            lcShowPlanAll = m.lcShowPlanAll + ccCRLF + "(" + ccSLOWCAPTION + ")"
+         CASE lnTime &gt;= cnMODERATESLOW
+            lcShowPlanAll = m.lcShowPlanAll + ccCRLF + "(" + ccMODERATESLOWCAPTION + ")"
+         OTHERWISE
+            * No concerns
+      ENDCASE
+
+      lcShowPlanAll = m.lcShowPlanAll + ccCRLF + ; 
+                      SQLFormater(lcSQL) + ccCRLF + ;
+                      "Seconds: " + ALLTRIM(TRANSFORM(m.lnTime,"9,999.99999")) + ccCRLF + ;
+                      "Records: " + TRANSFORM(m.lnRecords) + ccCRLF + ;
+                      IIF(EMPTY(m.lcViewParametersOutput), SPACE(0), m.lcViewParametersOutput + ccCRLF) + ;
+                      lcShowPlanSingleView + ;
+                      REPLICATE(ccCRLF, 2)
+
+      USE IN SELECT("curShowPlanTest")
+      
+      lcEndTime     = TRANSFORM(DATETIME())
+      lcShowPlanAll = m.lcShowPlanAll  + "Completed at " + m.lcEndTime + REPLICATE(ccCRLF, 2)
+
+   CATCH TO loException
+      lcShowPlanAll = lcShowPlanAll + ;
+                      ccCRLF + ; 
+                      "Exception: " + loException.Message + " on " + TRANSFORM(loException.LineNo) + ;
+                      ccCRLF + ccCRLF
+
+   FINALLY 
+      SET TALK NOWINDOW
+      SET TALK OFF
+      SYS(3054, 0)
+
+   ENDTRY
+   
+ELSE
+   * Remote views, nothing to do other than count it and document it is remote.
+   toParameter.nRemoteViewCount = m.toParameter.nRemoteViewCount + 1 
+
+   lcShowPlanAll = m.lcShowPlanAll + ; 
+                   REPLICATE(ccBORDERCHAR, LENC(m.lcView) + 4) + ccCRLF + ;
+                   ccBORDERCHAR + SPACE(1) + LOWER(m.lcView) + SPACE(1) + ccBORDERCHAR + ccCRLF + ;
+                   REPLICATE(ccBORDERCHAR, LENC(m.lcView) + 4) + ;
+                   ccCRLF + ccCRLF
+
+   lcShowPlanAll = m.lcShowPlanAll + ; 
+                   ccREMOTEVIEW_LITERAL + ;
+                   ccCRLF
+ENDIF 
+
+RETURN m.lcShowPlanAll
+
+
+****************************************************************************
+*  PROCEDURE NAME: SQLFormater
+*
+*  PROCEDURE DESCRIPTION:
+*     This procedure adds some carriage returns in the SQL code to make
+*     it a bit more readable.
+*
+*  INPUT PARAMETERS (All Required):
+*     tcSQL     = Character parameter, required, SQL statement to be formatted
+*
+*  OUTPUT PARAMETERS:
+*     lcSQL     = Returned character string with formatted SQL.
+****************************************************************************
+FUNCTION SQLFormater
+LPARAMETERS tcSql
+
+LOCAL lcRetVal, ;
+      lnLines, ;
+      lcSQL, ;
+      lnParens, ;
+      lnI
+
+DIMENSION laSQL[1]
+
+#DEFINE ccTAB   SPACE(3)
+
+lcSQL    = m.tcSQL
+
+lcSQL    = STRTRAN(m.lcSQL, "   ", " ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, "  ", " ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, ", ", ",",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, ",", ", ",-1,-1,1)
+
+lcSQL    = STRTRAN(m.lcSQL, " FROM ", " ;" + ccCRLF + ccTAB + "FROM ",-1,-1,1)
+
+lcSQL    = STRTRAN(m.lcSQL, " ON ", " ;" + ccCRLF + ccTAB + ccTAB + ccTAB + ccTAB + "ON ",-1,-1,1)
+
+* Handle the various types of join expressions
+lcSQL    = STRTRAN(m.lcSQL, " LEFT JOIN ", "|LEFT JOIN|",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " LEFT OUTER JOIN ", "|LEFT JOIN|",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " RIGHT JOIN ", "|RIGHT JOIN|",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " RIGHT OUTER JOIN ", "|RIGHT JOIN|",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " FULL JOIN ", "|FULL JOIN|",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " FULL OUTER JOIN ","|FULL JOIN|",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " JOIN ", "|JOIN|",-1,-1,1)
+
+lcSQL    = STRTRAN(m.lcSQL, "|LEFT JOIN|", " ;" + ccCRLF + ccTAB + ccTAB + "LEFT JOIN ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, "|RIGHT JOIN|", " ;" + ccCRLF + ccTAB + ccTAB + "RIGHT JOIN ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, "|FULL JOIN|", " ;" + ccCRLF + ccTAB + ccTAB + "FULL JOIN ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, "|JOIN|", " ;" + ccCRLF + ccTAB + ccTAB + "JOIN ",-1,-1,1)
+
+lcSQL    = STRTRAN(m.lcSQL, " WHERE ", " ;" + ccCRLF + ccTAB + "WHERE ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " ORDER BY ", " ;" + ccCRLF + ccTAB + "ORDER BY ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " GROUP BY ", " ;" + ccCRLF + ccTAB + "GROUP BY ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " AND ", " ;" + ccCRLF + ccTAB + ccTAB + "AND ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " OR ", " ;" + ccCRLF + ccTAB + ccTAB + "OR ",-1,-1,1)
+lcSQL    = STRTRAN(m.lcSQL, " HAVING ", " ;" + ccCRLF + ccTAB + "HAVING ",-1,-1,1)
+
+lcSQL    = STRTRAN(m.lcSQL, " UNION ", " ;" + ccCRLF + "UNION ",-1,-1,1)
+
+lnLines  = ALINES(laSql, m.lcSQL)
+lnParens = 0
+
+FOR m.lnI = 1 TO LEN(laSql[1])
+   DO CASE
+      CASE SUBSTR(laSql[1], m.lnI, 1) = "("
+         lnParens = lnParens + 1
+      CASE SUBSTR(laSql[1], m.lnI, 1) = ")"
+         lnParens = m.lnParens - 1
+      OTHERWISE
+         IF m.lnParens = 0 ;
+            AND SUBSTR(laSql[1], m.lnI, 2) = ", "
+            laSql[1] = STUFF(laSql[1], m.lnI, 2, "||")
+         ENDIF
+   ENDCASE
+ENDFOR
+
+laSql[1] = STRTRAN(laSql[1],"||",", ;" + ccCRLF + ccTAB + ccTAB)
+lcRetVal = SPACE(0)
+
+FOR m.lnI = 1 TO m.lnLines
+   lcRetVal = m.lcRetVal + laSql[lnI] + ccCRLF
+ENDFOR
+
+RETURN m.lcRetVal
+
+*: EOS :*</scriptcode>
+		<displayord>48</displayord>
+		<options/>
+		<optiondata/>
+		<whennodes>VFPDatabaseNode</whennodes>
+		<whencode/>
+		<template/>
+		<addinimage/>
+		<inactive>false</inactive>
+		<user/>
+		<modified>2012-08-27T13:31:57</modified>
+	</curselected>
+	<curselected>
+		<uniqueid>WLC.QueryEditor</uniqueid>
+		<deftype>Q</deftype>
+		<conntype/>
+		<connname>Editor</connname>
+		<conninfo>Query Editor</conninfo>
+		<classname/>
+		<classlib/>
+		<dataclass/>
+		<datalib/>
+		<scriptcode>********************************************************************************
+*  SCRIPT: WLC.QueryEditor
+*
+*  AUTHOR: Richard A. Schummer, September 2008
+*
+*  COPYRIGHT © 2008   All Rights Reserved.
+*     Richard A. Schummer
+*     White Light Computing, Inc.
+*     42759 Flis Dr.
+*     Sterling Heights, MI  48314-2850
+*     raschummer@whitelightcomputing.com
+*     rick@rickschummer.com
+*
+*     Shared with the Fox Community via conference sessions at
+*     Southwest Fox (http://swfox.net)
+*     German DevCon (http://devcon.dfpug.de)
+*     No implied warranties for suitablility or usage
+*
+*  SCRIPT DESCRIPTION:
+*     This script opens up the query in a PRG so developer has advantages of 
+*     Intellisense and colorized editor. Saving it will put edited query back
+*     into the Run Query dialog. File name of the program is "DXRunQuery.prg"
+*     and the file is stored in the TMPFILES folder. All semicolons are removed
+*     from the script because the Run Query dialog does not run with them. 
+*     Developer can use the semicolons to get the Intellisense.
+*
+*  CALLING SYNTAX:
+*     Called by the Data Explorer menu script
+*
+*  INPUT PARAMETERS:
+*    You can reference or change the current query text through oParameter.
+* 
+*    &lt;toParameter&gt;  = parameter object
+*      .QueryText - Specifies the current query (read/write).
+*      .oDataMgmt - reference to the data management object
+*      .oDataExplorerEngine - reference to the Data Explorer Engine object
+*
+*  OUTPUT PARAMETERS:
+*     None
+*
+*  DATABASES ACCESSED:
+*     None
+* 
+*  GLOBAL PROCEDURES REQUIRED:
+*     None
+* 
+*  CODING STANDARDS:
+*     Version 4.0 compliant with no exceptions
+*  
+*  TEST INFORMATION:
+*     None
+*   
+*  SPECIAL REQUIREMENTS/DEVICES:
+*     None
+*
+*  FUTURE ENHANCEMENTS:
+*     Add a form for the developer to select the records for export
+*
+*  LANGUAGE/VERSION:
+*     Visual FoxPro 09.00.0000.xxxx or higher
+* 
+********************************************************************************
+*                             C H A N G E    L O G                              
+*
+*    Date     Developer               Version  Description
+* ----------  ----------------------  -------  ---------------------------------
+* 09/13/2008  Richard A. Schummer     1.0      Created Program
+* ------------------------------------------------------------------------------
+*
+********************************************************************************
+LPARAMETERS toParameter
+
+LOCAL lcFileName
+
+* Name the program file
+lcFileName = ADDBS(SYS(2023)) + "DXRunQuery.prg"
+
+* Create the program file with the current query text
+STRTOFILE(toParameter.QueryText, m.lcFileName, 0)
+
+* Modify the program file
+MODIFY COMMAND (m.lcFileName)
+
+* Reassign query text with the edited program code
+toParameter.QueryText = FILETOSTR(m.lcFileName)
+
+* Replace any semicolons used for Intellisense in the code editor
+toParameter.QueryText = STRTRAN(toParameter.QueryText, ";", SPACE(0))
+
+RETURN</scriptcode>
+		<displayord>3</displayord>
+		<options/>
+		<optiondata/>
+		<whennodes/>
+		<whencode/>
+		<template/>
+		<addinimage>Qk2qBAAAAAAAADYAAAAoAAAAFAAAABMAAAABABgAAAAAAHQEAAAAAAAAAAAAAAAAAAAAAAAA////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5x8fH/////////////////+PU/fXw/fPv/fLt++/p++7m+u3k+Ori9+fc9uTa9uLW9N/S89vN8tjJq31Qx8fH/////////////////+PU/fj1/ffz/PXx/PPv/PLt+/Hr++/o++zk+uri+ejf+ebc+eTZ+OLWrH5Tx8fH/////////////////+PU/vn2/ff0/fXy/PTv/PLt+/Hs++/o+u3k+uvi+ung+efd+eXa+OPYrH5Tx8fH/////////////////+PU/fn3/vj1/ffz/PXx/PTv+/Ls/PDq++7m+uzk+urh+ujf+ebc+eTZrH9Tx8fH/////////////////+PU/vr4/vn3/fj1/fby/PXw/PPu/PHs++/o+u3m+uvk+unh+ufd+eXbrH9Tx8fH/////////////////+PU/vr4/vr4/vj1/fXx/fXx/PPu+/Dr7+/v++/n++3l+urj+enf+efdrH9Ux8fH/////////////////+PUAAAAAAAAAAAA////AAAAAAAAAAAA////AAAAAAAA+urj+urhAAAArH9Ux8fH/////////////////+PUAAAA////////////AAAA////ICAg+/DrAAAA++7nAAAA+uriAAAArH9Ux8fH/////////////////+PUAAAA////////////AAAA////UFBQ7+/vAAAA++/pAAAA+uzkAAAArIBUx8fH/////////////////+PUAAAAAAAAAAAA/vv5AAAAAAAAAAAA/vbyAAAAAAAA/fLt/fDqAAAArYFWx8fH/////////////////+TW/vn2/ff0/fbx+/Pu+/Hs+u/p+Ozl9ung9Obd8+PZ797S7drM69fGqX5Rx8fH/////////////////8qV/MWR+L+N9bmG8bKB66l6559z4ZVq2IZe0nxUxmhFu1Y2r0YqpDgenTEax8fH/////////////////8yZ/MeV+MKR9buL8LOE66t+5qJ24Zlv2Yli0n9YwMDAvFs7oZ2d////nTUcx8fH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////</addinimage>
+		<inactive>false</inactive>
+		<user/>
+		<modified>2008-09-15T01:35:25</modified>
+	</curselected>
+	<curselected>
+		<uniqueid>WLC.Export</uniqueid>
+		<deftype>Z</deftype>
+		<conntype/>
+		<connname>Export</connname>
+		<conninfo>Export Data</conninfo>
+		<classname/>
+		<classlib/>
+		<dataclass/>
+		<datalib/>
+		<scriptcode>********************************************************************************
+*  PROGRAM: Export Data: Data Explorer Run Query Add-on
+*
+*  AUTHOR: Richard A. Schummer, July 2008
+*
+*  COPYRIGHT © 2008   All Rights Reserved.
+*     Richard A. Schummer
+*     White Light Computing, Inc.
+*     42759 Flis Dr.
+*     Sterling Heights, MI  48314-2850
+*     raschummer@whitelightcomputing.com
+*     rick@rickschummer.com
+*
+*     Shared with the Fox Community via conference sessions at
+*     Southwest Fox (http://swfox.net)
+*     German DevCon (http://devcon.dfpug.de)
+*     No implied warranties for suitablility or usage
+*
+*  PROGRAM DESCRIPTION:
+*     This script exports data out of the result set to one of the many
+*     export formats Visual FoxPro supports via the COPY TO command.
+*     The current result set is the currently selected alias when this is called.
+*
+*  CALLING SYNTAX:
+*     Create add-in script and call from the Run Query dialog.
+*
+*  INPUT PARAMETERS:
+*     loParmeter = parameter object
+*      .QueryText - Specifies the current query (read/write).
+*      .oDataMgmt - reference to the data management object
+*      .oDataExplorerEngine - reference to the Data Explorer Engine object
+*
+*  OUTPUT PARAMETERS:
+*     None
+*
+*  DATABASES ACCESSED:
+*     Only the database access via the Data Explorer connection.
+* 
+*  GLOBAL PROCEDURES REQUIRED:
+*     None
+* 
+*  CODING STANDARDS:
+*     Version 4.0 compliant with no exceptions
+*  
+*  TEST INFORMATION:
+*     None
+*   
+*  SPECIAL REQUIREMENTS/DEVICES:
+*     None
+*
+*  FUTURE ENHANCEMENTS:
+*     None
+*
+*  LANGUAGE/VERSION:
+*     Visual FoxPro 09.00.0000.3504 or higher
+* 
+********************************************************************************
+*                             C H A N G E    L O G                              
+*
+*    Date     Developer               Version  Description
+* ----------  ----------------------  -------  ---------------------------------
+* 07/04/2008  Richard A. Schummer     1.0      Created Program
+* ------------------------------------------------------------------------------
+* 09/14/2008  Richard A. Schummer     1.1      Adjusted code to meet development
+*                                              standards, variables now use m., 
+*                                              set up localization constants
+* ------------------------------------------------------------------------------
+*
+********************************************************************************
+
+LPARAMETERS toParameter
+
+* Localizations
+* Intentionally did not localize the export styles since they are VFP terms.
+#DEFINE ccNODATA              "No data active to export!"
+#DEFINE ccDUPLICATEFILE       "You cannot export to the same file name as the file you are exporting."
+#DEFINE ccDATAEXPORTINGTO     "Data exporting to "
+#DEFINE ccSHELLPROBLEM        "Problem with the shelling the file: "
+#DEFINE ccSTATUSRETURNED      " status returned."
+#DEFINE ccPROBLEM             "Problem with the export command: "
+
+#DEFINE ccFORMCAPTION         "Data Explorer Quick Export"
+#DEFINE ccLBLTYPECAPTION      "Type:"
+#DEFINE ccLBLFILENAMECAPTION  "Export File Name:"
+#DEFINE ccLBLSEPARATORCAPTION "Separator:"
+#DEFINE ccLBLDELIMITERCAPTION "Value Delimiter:"
+#DEFINE ccCMDOKCAPTION        "OK"
+#DEFINE ccCMDCANCELCAPTION    "Cancel" 
+#DEFINE ccFORMFONTNAME        "Tahoma"
+#DEFINE ccFORMFONTSIZE        9
+
+* Declarations
+LOCAL lcExportTypesFileName, ;
+      lcExportTypesAlias, ;
+      lcOldSafety, ;
+      loFormParameter, ;
+      loExportDialog, ;
+      lcCopySyntax, ;
+      lcAdditionalSyntax, ;
+      lcDefaultCustomSeparator, ;
+      lcDefaultCustomDelimiter, ;
+      lcDefaultExportStyle, ;
+      llMsgWhenSuccessful, ;
+      lcMsgWhenSuccessful
+
+* Set your default behaviors here
+lcDefaultCustomSeparator = [|]
+lcDefaultCustomDelimiter = [~]
+lcDefaultExportStyle     = [Comma Separated Values (CSV)]
+
+* What happens after, Shelling open file takes precedence to message,
+* or it can be completely silent if you set both to false.
+llShellOpenAfterCreated  = .T.
+llMsgWhenSuccessful      = .T.
+
+* Determine some aliases code works with. Current alias is the result set.
+lcDataToExportAlias      = LOWER(ALIAS())
+lcExportTypesFileName    = ADDBS(SYS(2023)) + "__ExportStyles.dbf"
+lcExportTypesAlias       = JUSTSTEM(m.lcExportTypesFileName)
+
+* Need alias for active workarea or we need to bail...
+IF EMPTY(m.lcDataToExportAlias)
+   MESSAGEBOX(ccNODATA, ;
+              0+16, ;
+              _screen.Caption)
+   RETURN
+ENDIF 
+
+* Create table of export style options
+lcOldSafety = SET("Safety")
+SET SAFETY OFF 
+
+CREATE TABLE (m.lcExportTypesFileName) FREE ;
+   (cCaption   c(55), ;
+    cSyntax    c(70), ;
+    cExtension c(3), ;
+    nSequence  i)
+    
+INDEX ON nSequence TAG sequence 
+
+* Reset the environment
+SET SAFETY &amp;lcOldSafety
+
+* Populate cursor for combobox to pick the export format
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("System Data Format (SDF)", "SDF", "txt", 1)
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Comma Separated Values (CSV)", "CSV", "csv", 2) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Comma Delimited", "DELIMITED", "txt", 3)
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Character Delimited", "DELIMITED WITH &lt;DelimiterChar&gt;", "txt", 4) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Blank Delimited", "DELIMITED WITH BLANK", "txt", 5)
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Tab Delimited", "DELIMITED WITH TAB", "txt", 6) 
+
+* There is code in this solution that depends on the caption, so if you change it, tweak the code below in 
+* building of the COPY TO syntax, and in the form to display the customer separator/delimiter.
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Custom Separated/Delimited Characters", "DELIMITED WITH &lt;DelimiterChar&gt; WITH CHARACTER &lt;SeparatorChar&gt;", "txt", 7)
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Microsoft Excel version 5.0", "XL5", "xls", 8) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Microsoft Excel version 2.0", "XLS", "xls", 9) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("FoxPro 2.0 Table", "FOX2X", "dbf", 10) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("FoxPlus Table", "FOXPLUS", "dbf", 11) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Lotus 1-2-3 Version 2.x", "WK1", "wk1", 12) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Lotus 1-2-3 version 1a", "WKS", "wks", 13) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Lotus Symphony version 1.1 or 1.2", "WR1", "wr1", 14) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Lotus Symphony version 1.0", "WRK", "wrk", 15)
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("VisiCalc Data Interchange Format", "DIF", "dif", 16) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Microsoft Multiplan Version 4.01", "MOD", "mod", 17) 
+
+INSERT INTO (m.lcExportTypesAlias) ;
+   VALUES ("Microsoft MultiPlan Symbolic Link (SYLK)", "SYLK", SPACE(0), 18) 
+
+GO TOP IN (m.lcExportTypesAlias) 
+
+SELECT (m.lcDataToExportAlias) 
+
+lcDataPath  = LOWER(ADDBS(JUSTPATH(FULLPATH(DBF()))))
+
+loFormParameter = CREATEOBJECT("empty")
+ADDPROPERTY(m.loFormParameter, "cStyle", m.lcDefaultExportStyle)
+ADDPROPERTY(m.loFormParameter, "cExportFileName", FORCEEXT(m.lcDataPath + m.lcDataToExportAlias, EVALUATE(m.lcExportTypesAlias+".cExtension")))
+ADDPROPERTY(m.loFormParameter, "cSeparator", m.lcDefaultCustomSeparator)
+ADDPROPERTY(m.loFormParameter, "cDelimiter", m.lcDefaultCustomDelimiter)
+ADDPROPERTY(m.loFormParameter, "cExportStyleAlias", m.lcExportTypesAlias)
+ADDPROPERTY(m.loFormParameter, "lContinue", .T.)
+
+m.loExportDialog = CREATEOBJECT("frmQuickExportClass", m.loFormParameter)
+m.loExportDialog.Show()
+
+IF m.loFormParameter.lContinue
+   loFormParameter.cExportFileName = LOWER(ALLTRIM(m.loFormParameter.cExportFileName))
+
+   IF LOWER(DBF()) = m.loFormParameter.cExportFileName
+      MESSAGEBOX(ccDUPLICATEFILE, ;
+                 0+48, ;
+                 _screen.Caption)
+   ELSE
+      * Change the separator and delimiter to include quotes if semicolon, otherwise
+      * the macro substitution could include VFP line continuation character
+      IF INLIST(m.loFormParameter.cSeparator, ";")
+         m.loFormParameter.cSeparator = ["] + ALLTRIM(m.loFormParameter.cSeparator) + ["]
+      ENDIF 
+
+      IF m.loFormParameter.cDelimiter = ";"
+         m.loFormParameter.cDelimiter= [";"]
+      ENDIF 
+
+      * Building the following syntax
+      * COPY TO FileName [DATABASE DatabaseName [NAME LongTableName]]
+      *      [FIELDS FieldList | FIELDS LIKE Skeleton | FIELDS EXCEPT Skeleton]
+      *      [Scope] [FOR lExpression1] [WHILE lExpression2] 
+      *      [ [WITH] CDX ] | [ [WITH] PRODUCTION ] [NOOPTIMIZE] 
+      *      [AS nCodePage]
+
+      lcCopySyntax = [COPY TO ] + ;
+                     ALLTRIM(m.loFormParameter.cExportFileName) + ;
+                     [ TYPE ]
+
+      lcAdditionalSyntax = STRTRAN(EVALUATE(m.lcExportTypesAlias + ".cSyntax"), "&lt;DelimiterChar&gt;", m.loFormParameter.cDelimiter)
+      lcAdditionalSyntax = STRTRAN(m.lcAdditionalSyntax, "&lt;SeparatorChar&gt;", m.loFormParameter.cSeparator)
+      lcCopySyntax       = m.lcCopySyntax + ALLTRIM(m.lcAdditionalSyntax)
+
+      TRY
+         lcMsgWhenSuccessful = ALLTRIM(m.loFormParameter.cStyle) + "." + ;
+                               REPLICATE(CHR(13), 2) + ALLTRIM(m.loFormParameter.cExportFileName)
+
+         lcMsgWhenSuccessful = ccDATAEXPORTINGTO + lcMsgWhenSuccessful
+
+         WAIT WINDOW ccDATAEXPORTINGTO + lcMsgWhenSuccessful NOWAIT NOCLEAR
+         
+         * Perform the export to desired format
+         &amp;lcCopySyntax
+         
+         WAIT CLEAR
+         
+         IF llShellOpenAfterCreated
+            lnShellStatus = Shell(JUSTFNAME(m.loFormParameter.cExportFileName), JUSTPATH(m.loFormParameter.cExportFileName), "OPEN")
+            
+            IF lnShellStatus &gt; 32
+               * Succesful
+            ELSE
+               * Something went wrong, show status
+               MESSAGEBOX(ccSHELLPROBLEM + TRANSFORM(lnShellStatus) + ccSTATUSRETURNED + ;
+                          REPLICATE(CHR(13), 2) + lcMsgWhenSuccessful, ;
+                          0+48, ;
+                          _screen.Caption)
+            ENDIF
+         ELSE
+            IF m.llMsgWhenSuccessful
+               MESSAGEBOX(lcMsgWhenSuccessful, ;
+                          0+64, ;
+                          _screen.Caption)
+            ELSE
+               DEBUGOUT lcMsgWhenSuccessful
+            ENDIF
+         ENDIF
+
+      CATCH TO loException
+         WAIT CLEAR
+         MESSAGEBOX(ccPROBLEM + loException.Message, ;
+                    0+48, ;
+                    _screen.Caption)
+      ENDTRY
+   ENDIF
+ENDIF
+
+* Destroy the parameter object
+loFormParameter = .NULL.
+
+* Close and remove temp table with export style options
+USE IN (SELECT(m.lcExportTypesAlias))
+ERASE (m.lcExportTypesFileName)
+
+
+RETURN
+
+****************************************************************************
+*  PROCEDURE NAME:
+*     Shell
+*
+*  DESCRIPTION: 
+*     The function performs an operation on the file as specified in the 
+*     third parameter based on the file name extension for the file 
+*     passed in on the first parameter. This function implements the 
+*     Windows API ShellExecute
+*
+*  INPUT PARAMETERS:
+*     tnCounter   = This is the counter used to reference the array row
+*                   that has the field information
+*
+*  OUTPUT PARAMETERS:
+*     Return Value = This is the value returned by the ShellExecute API:
+*             2 - Bad Association (ie, invalid URL)
+*            31 - No application association
+*            29 - Failure to load application
+*            30 - Application is busy 
+*
+*            Values over 32 indicate success and return an instance handle
+*            for the application started (the browser)
+*
+****************************************************************************
+PROCEDURE Shell(tcFileName, tcWorkDir, tcOperation)
+
+LOCAL lcFileName, ;
+      lcWorkDir, ;
+      lcOperation
+
+IF EMPTY(tcFileName)
+   RETURN -1
+ENDIF
+
+* Address the default parameters
+lcFileName  = ALLTRIM(tcFileName)
+lcWorkDir   = IIF(VARTYPE(tcWorkDir) = "C", ALLTRIM(tcWorkDir), SPACE(0))
+lcOperation = IIF(VARTYPE(tcOperation)="C" AND NOT EMPTY(tcOperation), ALLTRIM(tcOperation), "Open")
+
+* ShellExecute(hwnd, lpszOp, lpszFile, lpszParams, lpszDir, wShowCmd)
+*    HWND hwnd         - handle of parent window
+*    LPCTSTR lpszOp    - address of string for operation to perform
+*    LPCTSTR lpszFile  - address of string for filename
+*    LPTSTR lpszParams - address of string for executable-file parameters
+*    LPCTSTR lpszDir   - address of string for default directory
+*    INT wShowCmd      - whether file is shown when opened
+DECLARE INTEGER ShellExecute IN SHELL32.DLL ;
+        INTEGER nWinHandle,;
+        STRING cOperation,;   
+        STRING cFileName,;
+        STRING cParameters,;
+        STRING cDirectory,;
+        INTEGER nShowWindow
+
+RETURN ShellExecute(0, lcOperation, lcFilename, "", lcWorkDir, 1)
+
+
+********************************************************************************
+*  CLASS NAME: frmQuickExportClass
+*
+*  AUTHOR: Richard A. Schummer, July 2008
+*
+*  CLASS DESCRIPTION:
+*    This class is a form to provide export setting selections.
+* 
+********************************************************************************
+DEFINE CLASS frmQuickExportClass AS CFoxForm OF DataExplorerCtrls.vcx
+   Height      = 165
+   Width       = 600
+   DoCreate    = .T.
+   AutoCenter  = .T.
+   Caption     = ccFORMCAPTION
+   WindowType  = 1
+
+   * This property holds a reference to the parameter object passed into the form.
+   oParameter      = .NULL.
+   * This property is the full path and name of the file data will be exported to once the form is closed.
+   cExportFilename = SPACE(0)
+   * This property is used to determine the separator character(s) when exporting to one of many delimted formats.
+   cSeparator      = ","
+   * This property is the value delimiter used when exporting to one of many delimited text formats.
+   cDelimiter      = ["]
+   
+   * This property is part of the cFoxForm, used to determine where the form settings are stored in the resource file.
+   cResourceID     = "DATAEXPLORER"
+
+   Name = "frmQuickExport"
+
+   ADD OBJECT cboExportStyles AS combobox WITH ;
+      FontName      = "Tahoma", ;
+      RowSourceType = 6, ;
+      RowSource     = "__ExportStyles.cCaption", ;
+      Height        = 24, ;
+      Left          = 135, ;
+      Style         = 2, ;
+      TabIndex      = 1, ;
+      Top           = 12, ;
+      Width         = 264, ;
+      Name          = "cboExportStyles"
+
+   ADD OBJECT lblType AS label WITH ;
+      FontName  = "Tahoma", ;
+      Alignment = 1, ;
+      BackStyle = 0, ;
+      Caption   = ccLBLTYPECAPTION, ;
+      Height    = 17, ;
+      Left      = 92, ;
+      Top       = 16, ;
+      Width     = 40, ;
+      TabIndex  = 8, ;
+      Name      = "lblType"
+
+   ADD OBJECT txtExportFilename AS textbox WITH ;
+      FontName      = "Tahoma", ;
+      Anchor        = 10, ;
+      Height        = 23, ;
+      Left          = 135, ;
+      SelectOnEntry = .T., ;
+      TabIndex      = 3, ;
+      Top           = 48, ;
+      Width         = 408, ;
+      Name          = "txtExportFileName"
+
+   ADD OBJECT cmdFilePicker AS commandbutton WITH ;
+      Top      = 48, ;
+      Left     = 543, ;
+      Height   = 23, ;
+      Width    = 26, ;
+      FontBold = .T., ;
+      FontName = "Tahoma", ;
+      Anchor   = 9, ;
+      Caption  = "...", ;
+      TabIndex = 2, ;
+      Name     = "cmdFilePicker"
+
+   ADD OBJECT lblFileName AS label WITH ;
+      FontName  = "Tahoma", ;
+      Alignment = 1, ;
+      BackStyle = 0, ;
+      Caption   = ccLBLFILENAMECAPTION, ;
+      Height    = 17, ;
+      Left      = 5, ;
+      Top       = 52, ;
+      Width     = 127, ;
+      TabIndex  = 9, ;
+      Name      = "lblFileName"
+
+   ADD OBJECT lblSeperator AS label WITH ;
+      FontName  = "Tahoma", ;
+      Alignment = 1, ;
+      BackStyle = 0, ;
+      Caption   = ccLBLSEPARATORCAPTION, ;
+      Height    = 17, ;
+      Left      = 173, ;
+      Top       = 88, ;
+      Width     = 94, ;
+      TabIndex  = 10, ;
+      Name      = "lblSeperator"
+
+   ADD OBJECT txtSeparator AS textbox WITH ;
+      FontName      = "Tahoma", ;
+      Height        = 23, ;
+      Left          = 269, ;
+      SelectOnEntry = .T., ;
+      TabIndex      = 5, ;
+      Top           = 84, ;
+      Width         = 36, ;
+      Name          = "txtSeparator"
+
+   ADD OBJECT lblDelimiter AS label WITH ;
+      FontName  = "Tahoma", ;
+      Alignment = 1, ;
+      BackStyle = 0, ;
+      Caption   = ccLBLDELIMITERCAPTION, ;
+      Height    = 17, ;
+      Left      = 24, ;
+      Top       = 88, ;
+      Width     = 108, ;
+      TabIndex  = 11, ;
+      Name      = "lblDelimiter"
+
+   ADD OBJECT txtDelimiter AS textbox WITH ;
+      FontName      = "Tahoma", ;
+      Height        = 23, ;
+      Left          = 135, ;
+      SelectOnEntry = .T., ;
+      TabIndex      = 4, ;
+      Top           = 84, ;
+      Width         = 36, ;
+      Name          = "txtDelimiter"
+
+   ADD OBJECT cmdOk AS commandbutton WITH ;
+      FontName = "Tahoma", ;
+      Top      = 120, ;
+      Left     = 209, ;
+      Height   = 27, ;
+      Width    = 84, ;
+      Anchor   = 260, ;
+      Caption  = ccCMDOKCAPTION, ;
+      Default  = .T., ;
+      TabIndex = 6, ;
+      Name     = "cmdOK"
+
+   ADD OBJECT cmdCancel AS commandbutton WITH ;
+      FontName = "Tahoma", ;
+      Top      = 120, ;
+      Left     = 313, ;
+      Height   = 27, ;
+      Width    = 84, ;
+      Anchor   = 260, ;
+      Cancel   = .T., ;
+      Caption  = ccCMDCANCELCAPTION, ;
+      TabIndex = 7, ;
+      Name     = "cmdCancel"
+
+   * This method is called to get the file name the data is exported to via the export process.
+   PROCEDURE GetExportFilename
+      LOCAL lcExtension, ;
+            lcOrigFileName, ;
+            lcFileName
+
+      lcExtension = EVALUATE(this.oParameter.cExportStyleAlias + ".cExtension")
+
+      IF EMPTY(this.oParameter.cExportFileName)
+         lcOrigFileName = SPACE(0)
+      ELSE
+         lcOrigFileName = FORCEEXT(this.oParameter.cExportFileName, lcExtension)
+      ENDIF 
+
+      lcFileName = GETFILE(lcExtension)
+
+      IF EMPTY(lcFileName)
+         * Nothing to do or replace
+      ELSE
+         this.oParameter.cExportFileName = LOWER(lcFileName)
+         this.Refresh()
+      ENDIF 
+
+      RETURN
+   ENDPROC
+
+   * This method is called to set the export file name extension.
+   PROCEDURE SetExtension
+      LOCAL loException AS Exception
+
+      TRY 
+         this.oParameter.cExportFileName = FORCEEXT(this.oParameter.cExportFileName, EVALUATE(this.oParameter.cExportStyleAlias + ".cExtension"))
+         this.Refresh()
+         
+      CATCH TO loException
+         MESSAGEBOX("Problem setting the export file extension: " + loException.Message, ;
+                    0+48, ;
+                    this.Caption)
+
+      ENDTRY
+
+      RETURN
+   ENDPROC
+
+
+   * This method is called to set the visibility of the controls for the separators and delimiters.
+   PROCEDURE SetSeparatorDelimiterControlVisibility
+      LPARAMETERS toObject
+
+      LOCAL llReturnValue
+
+      DO CASE
+         CASE "delimiter" $ LOWER(toObject.Name) AND INLIST(this.oParameter.cStyle, "Custom Separated/Delimited Characters", "Character Delimited")
+            llReturnValue = .T.
+
+         CASE this.oParameter.cStyle = "Custom Separated/Delimited Characters"
+            llReturnValue = .T.
+
+         OTHERWISE
+            llReturnValue = .F.
+      ENDCASE
+
+      RETURN llReturnValue 
+   ENDPROC
+
+   PROCEDURE SetFormControlsFont()
+      this.SetAll("FontName", ccFORMFONTNAME)
+      this.SetAll("FontSize", ccFORMFONTSIZE)
+   ENDPROC 
+
+   PROCEDURE Init
+      LPARAMETERS toParameter
+
+      LOCAL loException AS Exception, ;
+            llReturnValue
+
+      DODEFAULT()
+
+      llReturnValue = .T.
+
+      IF VARTYPE(toParameter) = "O"
+         this.oParameter = toParameter
+         
+         * Local error handling in case developer does not use proper structure of parameter object
+         TRY 
+            IF RECCOUNT(this.oParameter.cExportStyleAlias) &lt; 1
+               llReturnValue = .F.
+            ELSE
+               this.cboExportStyles.DisplayCount = RECCOUNT(this.oParameter.cExportStyleAlias)
+         
+               * Set the controlsource to properties passed back via parameter object
+               this.cboExportStyles.ControlSource   = "thisform.oParameter.cStyle"
+               this.txtExportFileName.ControlSource = "thisform.oParameter.cExportFileName"
+               this.txtSeparator.ControlSource      = "thisform.oParameter.cSeparator"
+               this.txtDelimiter.ControlSource      = "thisform.oParameter.cDelimiter"
+
+               this.SetExtension()
+               this.SetFormControlsFont()
+            ENDIF 
+            
+            
+         CATCH TO loException
+            * Nothing can be passed back
+            MESSAGEBOX("Problem with the parameter object properties: " + loException.Message, ;
+                       0+48, ;
+                       thisform.Caption)
+         ENDTRY 
+      ELSE
+         ASSERT .F. MESSAGE "Bad parameter passed to the Quick Export form." 
+         llReturnValue = .F.
+      ENDIF 
+
+      RETURN llReturnValue
+   ENDPROC
+
+   PROCEDURE Destroy
+      DODEFAULT()
+      
+      this.oParameter = .NULL.
+
+      RETURN
+   ENDPROC
+
+   PROCEDURE cboExportStyles.Valid
+      thisform.SetExtension()
+      RETURN
+   ENDPROC
+
+   PROCEDURE cmdFilePicker.Click
+      thisform.GetExportFileName()
+      RETURN 
+   ENDPROC
+
+   PROCEDURE cmdCancel.Click
+      TRY
+         thisform.oParameter.lContinue = .F.
+
+      CATCH TO loException
+         MESSAGEBOX("Problem setting property to cancel: " + loException.Message, ;
+                    0+48, ;
+                    _screen.Caption)
+      ENDTRY
+
+      thisform.Release()
+
+      RETURN
+   ENDPROC
+
+   PROCEDURE cmdOk.Click
+      thisform.Release()
+      RETURN
+   ENDPROC
+
+   PROCEDURE txtSeparator.Refresh
+      this.Visible = thisform.SetSeparatorDelimiterControlVisibility(this)
+      RETURN
+   ENDPROC
+
+   PROCEDURE txtDelimiter.Refresh
+      this.Visible = thisform.SetSeparatorDelimiterControlVisibility(this)
+      RETURN
+   ENDPROC
+
+   PROCEDURE lblSeperator.Refresh
+      this.Visible = thisform.SetSeparatorDelimiterControlVisibility(this)
+      RETURN
+   ENDPROC
+
+   PROCEDURE lblDelimiter.Refresh
+      this.Visible = thisform.SetSeparatorDelimiterControlVisibility(this)
+      RETURN
+   ENDPROC
+ENDDEFINE
+
+*: EOS :*</scriptcode>
+		<displayord>1</displayord>
+		<options/>
+		<optiondata/>
+		<whennodes/>
+		<whencode/>
+		<template/>
+		<addinimage/>
+		<inactive>false</inactive>
+		<user/>
+		<modified>2008-09-15T01:35:25</modified>
+	</curselected>
+</VFPData>

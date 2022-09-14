@@ -14,6 +14,9 @@ Version 3 extends on the functionality provided by the Data Explorer released wi
 * New LIST STRU off the shortcut menu
 * New connection type for Directory shows list of all DBFs in a folder
 * Corrected bug in Display Show Plan option added to Sedna version of Data Explorer
-* VFPX Repository ([http://vfpxrepository.com](http://vfpxrepository.com))
 
 New file called ChangeLog.TXT included in the project and source with latest changes in each release.
+
+The repository also contains a file called WLCDxFeatureManifest.XML, which contains extensions written by the project manager, Rick Schummer. These were previously hosted on http://vfpxrepository.com, which no longer exists. 
+
+The Import Features is available on the shortcut menu of the Data Explorer node on the tree view. You are first prompted to pick a manifest file to import. If you do not pick one, the process naturally does nothing. If the file exists and is the proper format, the Import Features dialog is displayed. You can select all the features or just the ones you are interested in using.
